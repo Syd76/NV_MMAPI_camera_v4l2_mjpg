@@ -30,7 +30,7 @@
 
 
 ### Tegra rules :
-# export TEGRA_ARMABI=aarch64-linux-gnu ; make -j4
+# export TEGRA_ARMABI=aarch64-linux-gnu ; make -j4 ENABLE_VALGRIND=yes
 
 ### Capture only
 # ./camera_v4l2_mjpg -d /dev/video0 -s 3840x2160 -v -m 0
@@ -45,8 +45,15 @@
 # ./camera_v4l2_mjpg -d /dev/video0 -s 3840x2160 -v -m 3
 
 
+$(info $$ENABLE_VALGRIND for ${ENABLE_VALGRIND} )
 
 include ../Rules.mk
+
+ifeq (${ENABLE_VALGRIND},yes)
+	CPPFLAGS += -DENABLE_VALGRIND
+endif
+
+
 
 APP := camera_v4l2_mjpg 
 
@@ -61,6 +68,7 @@ OBJS += \
 	$(ALGO_CUDA_DIR)/NvCudaProc.o
 
 all: $(APP)
+	@echo "CPPFLAGS = "${CPPFLAGS}
 
 $(CLASS_DIR)/%.o: $(CLASS_DIR)/%.cpp
 	$(AT)$(MAKE) -C $(CLASS_DIR)

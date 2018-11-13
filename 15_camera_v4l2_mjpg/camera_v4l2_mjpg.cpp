@@ -45,6 +45,10 @@
 
 #include "camera_v4l2_mjpg.h"
 
+#ifdef ENABLE_VALGRIND
+#include <valgrind/memcheck.h>
+#endif
+
 static bool quit = false;
 
 using namespace std;
@@ -63,6 +67,7 @@ print_usage(void)
            "\t-n\t\tSave the n-th frame before VIC processing\n"
            "\t-c\t\tEnable CUDA aglorithm (draw a black box in the upper left corner)\n"
            "\t-m\t\tEnable level : 0 for silente , 1 for parser, 2 for decoder and 3 for display \n"
+           "\t-l\t\tEnable valgrind check ( memory leak )\n"
            "\t-v\t\tEnable verbose message\n"
            "\t-h\t\tPrint this usage\n\n"
            "\tNOTE: It runs infinitely until you terminate it with <ctrl+c>\n");
@@ -80,7 +85,7 @@ parse_cmdline(context_t * ctx, int argc, char **argv)
     }
 
                     
-    while ((c = getopt(argc, argv, "d:s:f:r:n:m:cvh")) != -1)
+    while ((c = getopt(argc, argv, "d:s:f:r:n:m:l:cvh")) != -1)
     {
         switch (c)
         {
@@ -116,7 +121,9 @@ parse_cmdline(context_t * ctx, int argc, char **argv)
                 break;
             case 'm':
                 ctx->enable_silence = strtol(optarg, NULL, 10);
-
+                break;
+            case 'l':
+                ctx->enable_valgrind = true;
                 break;
             case 'v':
                 ctx->enable_verbose = true;
@@ -151,6 +158,7 @@ set_defaults(context_t * ctx)
     ctx->renderer = NULL;
     ctx->fps = 30;
     ctx->enable_silence = 3;
+    ctx->enable_valgrind = false;
     ctx->enable_cuda = false;
     ctx->egl_image = NULL;
     ctx->egl_display = EGL_NO_DISPLAY;
@@ -728,6 +736,13 @@ start_capture(context_t * ctx)
                 ERROR_RETURN("Failed to queue camera buffers: %s (%d)",
                         strerror(errno), errno);
         }
+        
+
+#ifdef ENABLE_VALGRIND
+        if ( 2 < ctx->enable_valgrind ) {
+            VALGRIND_DO_QUICK_LEAK_CHECK ;
+        }
+#endif
     }
 
     // Print profiling information when streaming stops.

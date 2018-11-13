@@ -101,6 +101,7 @@ typedef struct
     enum v4l2_buf_type		cam_type;
     NvJPEGDecoder *m_JpegDec;
     int enable_silence;
+    bool enable_valgrind;
     uint32_t x_Display_Offset  ;
 	uint32_t y_Display_Offset ;
         // JPEG PARSE MMAP buffer
