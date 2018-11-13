@@ -22,3 +22,11 @@
 
 * "-m" used for level stream ( capture to display )
 
+## LOG
+
+* ldd_camera_v4l2_mjpg.log 
+	- result of "lld camera_v4l2_mjpg"
+* nv_tegra_release.log 
+	- Nvidia release 
+* valgrind_memcheck2.log
+	- log from capture_valgrind.sh and VALGRIND_DO_QUICK_LEAK_CHECK macro
