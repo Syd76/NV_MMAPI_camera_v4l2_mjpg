@@ -1,0 +1,285 @@
+From 2204d4c5db26a8df611636cbfa47106a8c692c96 Mon Sep 17 00:00:00 2001
+From: Dane Liu <danel@nvidia.com>
+Date: Fri, 22 Jun 2018 14:27:04 +0800
+Subject: [PATCH 1/7] mm_api: v4l2_cam: support MJPEG
+
+MJPEG is supported in most USB cams.
+Make a sample to leverage NvJPEGDecoder
+
+bug 200424421
+
+Change-Id: I66845de71c48b7bc558939e6788ef5c3205859c0
+Reviewed-on: https://git-master.nvidia.com/r/1757776
+GVS: Gerrit_Virtual_Submit
+Tested-by: Dane Liu <danel@nvidia.com>
+Reviewed-by: Martin Chi <mchi@nvidia.com>
+Reviewed-by: Swapnil Rathi <srathi@nvidia.com>
+Reviewed-by: Kaustubh Purandare <kpurandare@nvidia.com>
+Reviewed-by: mobile promotions <svcmobile_promotions@nvidia.com>
+Tested-by: mobile promotions <svcmobile_promotions@nvidia.com>
+---
+ .../12_camera_v4l2_cuda/camera_v4l2_cuda.cpp       | 148 +++++++++++++++++++--
+ .../samples/12_camera_v4l2_cuda/camera_v4l2_cuda.h |   4 +
+ 2 files changed, 139 insertions(+), 13 deletions(-)
+
+diff --git a/multimedia_api/ll_samples/samples/12_camera_v4l2_cuda/camera_v4l2_cuda.cpp b/multimedia_api/ll_samples/samples/12_camera_v4l2_cuda/camera_v4l2_cuda.cpp
+index 6aed080..274c3ba 100644
+--- a/multimedia_api/ll_samples/samples/12_camera_v4l2_cuda/camera_v4l2_cuda.cpp
++++ b/multimedia_api/ll_samples/samples/12_camera_v4l2_cuda/camera_v4l2_cuda.cpp
+@@ -44,6 +44,8 @@
+ 
+ #include "camera_v4l2_cuda.h"
+ 
++#define MJPEG_EOS_SEARCH_SIZE 4096
++
+ static bool quit = false;
+ 
+ using namespace std;
+@@ -57,7 +59,7 @@ print_usage(void)
+            "\tSupported options:\n"
+            "\t-d\t\tSet V4l2 video device node\n"
+            "\t-s\t\tSet output resolution of video device\n"
+-           "\t-f\t\tSet output pixel format of video device (supports only YUYV/YVYU/UYVY/VYUY)\n"
++           "\t-f\t\tSet output pixel format of video device (supports only YUYV/YVYU/UYVY/VYUY/MJPEG)\n"
+            "\t-r\t\tSet renderer frame rate (30 fps by default)\n"
+            "\t-n\t\tSave the n-th frame before VIC processing\n"
+            "\t-c\t\tEnable CUDA aglorithm (draw a black box in the upper left corner)\n"
+@@ -101,6 +103,8 @@ parse_cmdline(context_t * ctx, int argc, char **argv)
+                     ctx->cam_pixfmt = V4L2_PIX_FMT_VYUY;
+                 else if (strcmp(optarg, "UYVY") == 0)
+                     ctx->cam_pixfmt = V4L2_PIX_FMT_UYVY;
++                else if (strcmp(optarg, "MJPEG") == 0)
++                    ctx->cam_pixfmt = V4L2_PIX_FMT_MJPEG;
+                 else
+                 {
+                     print_usage();
+@@ -242,11 +246,18 @@ camera_initialize(context_t * ctx)
+         ctx->cam_pixfmt =fmt.fmt.pix.pixelformat;
+     }
+ 
+-    INFO("Camera ouput format: (%d x %d)  stride: %d, imagesize: %d",
++    struct v4l2_streamparm streamparm;
++    memset (&streamparm, 0x00, sizeof (struct v4l2_streamparm));
++    streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
++    ioctl (ctx->cam_fd, VIDIOC_G_PARM, &streamparm);
++
++    INFO("Camera ouput format: (%d x %d)  stride: %d, imagesize: %d, frate: %u / %u",
+             fmt.fmt.pix.width,
+             fmt.fmt.pix.height,
+             fmt.fmt.pix.bytesperline,
+-            fmt.fmt.pix.sizeimage);
++            fmt.fmt.pix.sizeimage,
++            streamparm.parm.capture.timeperframe.denominator,
++            streamparm.parm.capture.timeperframe.numerator);
+ 
+     return true;
+ }
+@@ -336,6 +347,72 @@ request_camera_buff(context_t *ctx)
+ }
+ 
+ static bool
++prepare_buffers_mjpeg(context_t * ctx)
++{
++    NvBufferCreateParams input_params = {0};
++
++    // Allocate global buffer context
++    ctx->g_buff = (nv_buffer *)malloc(V4L2_BUFFERS_NUM * sizeof(nv_buffer));
++    if (ctx->g_buff == NULL)
++        ERROR_RETURN("Failed to allocate global buffer context");
++    memset(ctx->g_buff, 0, V4L2_BUFFERS_NUM * sizeof(nv_buffer));
++
++    input_params.payloadType = NvBufferPayload_SurfArray;
++    input_params.width = ctx->cam_w;
++    input_params.height = ctx->cam_h;
++    input_params.layout = NvBufferLayout_Pitch;
++    input_params.colorFormat = get_nvbuff_color_fmt(V4L2_PIX_FMT_YUV420M);
++    input_params.nvbuf_tag = NvBufferTag_NONE;
++    // Create Render buffer
++    if (-1 == NvBufferCreateEx(&ctx->render_dmabuf_fd, &input_params))
++        ERROR_RETURN("Failed to create NvBuffer");
++
++    // Request camera v4l2 buffer
++    struct v4l2_requestbuffers rb;
++    memset(&rb, 0, sizeof(rb));
++    rb.count = V4L2_BUFFERS_NUM;
++    rb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
++    rb.memory = V4L2_MEMORY_MMAP;
++    if (ioctl(ctx->cam_fd, VIDIOC_REQBUFS, &rb) < 0)
++        ERROR_RETURN("Failed to request v4l2 buffers: %s (%d)",
++                strerror(errno), errno);
++    if (rb.count != V4L2_BUFFERS_NUM)
++        ERROR_RETURN("V4l2 buffer number is not as desired");
++
++    for (unsigned int index = 0; index < V4L2_BUFFERS_NUM; index++)
++    {
++        struct v4l2_buffer buf;
++
++        // Query camera v4l2 buf length
++        memset(&buf, 0, sizeof buf);
++        buf.index = index;
++        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
++
++        buf.memory = V4L2_MEMORY_MMAP;
++        if (ioctl(ctx->cam_fd, VIDIOC_QUERYBUF, &buf) < 0)
++            ERROR_RETURN("Failed to query buff: %s (%d)",
++                    strerror(errno), errno);
++
++        ctx->g_buff[index].size = buf.length;
++        ctx->g_buff[index].start = (unsigned char *)
++            mmap (NULL /* start anywhere */,
++                    buf.length,
++                    PROT_READ | PROT_WRITE /* required */,
++                    MAP_SHARED /* recommended */,
++                    ctx->cam_fd, buf.m.offset);
++        if (MAP_FAILED == ctx->g_buff[index].start)
++            ERROR_RETURN("Failed to map buffers");
++
++        if (ioctl(ctx->cam_fd, VIDIOC_QBUF, &buf) < 0)
++            ERROR_RETURN("Failed to enqueue buffers: %s (%d)",
++                    strerror(errno), errno);
++    }
++
++    INFO("Succeed in preparing mjpeg buffers");
++    return true;
++}
++
++static bool
+ prepare_buffers(context_t * ctx)
+ {
+     NvBufferCreateParams input_params = {0};
+@@ -446,6 +523,9 @@ start_capture(context_t * ctx)
+     sig_action.sa_flags = 0;
+     sigaction(SIGINT, &sig_action, NULL);
+ 
++    if (ctx->cam_pixfmt == V4L2_PIX_FMT_MJPEG)
++        ctx->jpegdec = NvJPEGDecoder::createJPEGDecoder("jpegdec");
++
+     // Init the NvBufferTransformParams
+     memset(&transParams, 0, sizeof(transParams));
+     transParams.transform_flag = NVBUFFER_TRANSFORM_FILTER;
+@@ -465,6 +545,8 @@ start_capture(context_t * ctx)
+             memset(&v4l2_buf, 0, sizeof(v4l2_buf));
+             v4l2_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+             v4l2_buf.memory = V4L2_MEMORY_DMABUF;
++            if (ctx->cam_pixfmt == V4L2_PIX_FMT_MJPEG)
++                v4l2_buf.memory = V4L2_MEMORY_MMAP;
+             if (ioctl(ctx->cam_fd, VIDIOC_DQBUF, &v4l2_buf) < 0)
+                 ERROR_RETURN("Failed to dequeue camera buff: %s (%d)",
+                         strerror(errno), errno);
+@@ -474,15 +556,44 @@ start_capture(context_t * ctx)
+             if (ctx->frame == ctx->save_n_frame)
+                 save_frame_to_file(ctx, &v4l2_buf);
+ 
+-            // Cache sync for VIC operation
+-            NvBufferMemSyncForDevice(ctx->g_buff[v4l2_buf.index].dmabuff_fd, 0,
+-                    (void**)&ctx->g_buff[v4l2_buf.index].start);
++            if (ctx->cam_pixfmt == V4L2_PIX_FMT_MJPEG) {
++                int fd = 0;
++                uint32_t width, height, pixfmt;
++                unsigned int i = 0;
++                unsigned int eos_search_size = MJPEG_EOS_SEARCH_SIZE;
++                unsigned int bytesused = v4l2_buf.bytesused;
++                uint8_t *p;
++
++                // v4l2_buf.bytesused may have padding bytes for alignment
++                // Search for EOF to get exact size
++                if (eos_search_size > bytesused)
++                    eos_search_size = bytesused;
++                for (i = 0; i < eos_search_size; i++) {
++                    p =(uint8_t *)(ctx->g_buff[v4l2_buf.index].start + bytesused);
++                    if ((*(p-2) == 0xff) && (*(p-1) == 0xd9)) {
++                        break;
++                    }
++                    bytesused--;
++                }
++
++                if (ctx->jpegdec->decodeToFd(fd, ctx->g_buff[v4l2_buf.index].start,
++                    bytesused, pixfmt, width, height) < 0)
++                    ERROR_RETURN("Cannot decode MJPEG");
+ 
+-            // Convert the camera buffer from YUV422 to YUV420P
+-            if (-1 == NvBufferTransform(ctx->g_buff[v4l2_buf.index].dmabuff_fd, ctx->render_dmabuf_fd,
++                // Convert the camera buffer to YUV420P
++                if (-1 == NvBufferTransform(fd, ctx->render_dmabuf_fd,
+                         &transParams))
+-                ERROR_RETURN("Failed to convert the buffer");
+-
++                    ERROR_RETURN("Failed to convert the buffer");
++            } else {
++                // Cache sync for VIC operation
++                NvBufferMemSyncForDevice(ctx->g_buff[v4l2_buf.index].dmabuff_fd, 0,
++                        (void**)&ctx->g_buff[v4l2_buf.index].start);
++
++                // Convert the camera buffer from YUV422 to YUV420P
++                if (-1 == NvBufferTransform(ctx->g_buff[v4l2_buf.index].dmabuff_fd, ctx->render_dmabuf_fd,
++                            &transParams))
++                    ERROR_RETURN("Failed to convert the buffer");
++            }
+             cuda_postprocess(ctx, ctx->render_dmabuf_fd);
+ 
+             ctx->renderer->render(ctx->render_dmabuf_fd);
+@@ -497,6 +608,9 @@ start_capture(context_t * ctx)
+     // Print profiling information when streaming stops.
+     ctx->renderer->printProfilingStats();
+ 
++    if (ctx->cam_pixfmt == V4L2_PIX_FMT_MJPEG)
++        delete ctx->jpegdec;
++
+     return true;
+ }
+ 
+@@ -529,8 +643,13 @@ main(int argc, char *argv[])
+     CHECK_ERROR(init_components(&ctx), cleanup,
+             "Failed to initialize v4l2 components");
+ 
+-    CHECK_ERROR(prepare_buffers(&ctx), cleanup,
+-            "Failed to prepare v4l2 buffs");
++    if (ctx.cam_pixfmt == V4L2_PIX_FMT_MJPEG) {
++        CHECK_ERROR(prepare_buffers_mjpeg(&ctx), cleanup,
++                "Failed to prepare v4l2 buffs");
++    } else {
++        CHECK_ERROR(prepare_buffers(&ctx), cleanup,
++                "Failed to prepare v4l2 buffs");
++    }
+ 
+     CHECK_ERROR(start_stream(&ctx), cleanup,
+             "Failed to start streaming");
+@@ -553,9 +672,12 @@ cleanup:
+ 
+     if (ctx.g_buff != NULL)
+     {
+-        for (unsigned i = 0; i < V4L2_BUFFERS_NUM; i++)
++        for (unsigned i = 0; i < V4L2_BUFFERS_NUM; i++) {
+             if (ctx.g_buff[i].dmabuff_fd)
+                 NvBufferDestroy(ctx.g_buff[i].dmabuff_fd);
++            if (ctx.cam_pixfmt == V4L2_PIX_FMT_MJPEG)
++                munmap(ctx.g_buff[i].start, ctx.g_buff[i].size);
++        }
+         free(ctx.g_buff);
+     }
+ 
+diff --git a/multimedia_api/ll_samples/samples/12_camera_v4l2_cuda/camera_v4l2_cuda.h b/multimedia_api/ll_samples/samples/12_camera_v4l2_cuda/camera_v4l2_cuda.h
+index cc08dc1..5274d0b 100644
+--- a/multimedia_api/ll_samples/samples/12_camera_v4l2_cuda/camera_v4l2_cuda.h
++++ b/multimedia_api/ll_samples/samples/12_camera_v4l2_cuda/camera_v4l2_cuda.h
+@@ -27,6 +27,7 @@
+  */
+ 
+ #include <queue>
++#include "NvJpegDecoder.h"
+ 
+ #define V4L2_BUFFERS_NUM    4
+ 
+@@ -85,6 +86,9 @@ typedef struct
+     EGLDisplay egl_display;
+     EGLImageKHR egl_image;
+ 
++    // MJPEG decoding
++    NvJPEGDecoder *jpegdec;
++
+     // Verbose option
+     bool enable_verbose;
+ 
+-- 
+2.1.4
+
