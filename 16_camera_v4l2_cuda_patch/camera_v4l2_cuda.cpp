@@ -577,13 +577,17 @@ start_capture(context_t * ctx)
                 }
 
                 if (ctx->jpegdec->decodeToFd(fd, ctx->g_buff[v4l2_buf.index].start,
-                    bytesused, pixfmt, width, height) < 0)
-                    ERROR_RETURN("Cannot decode MJPEG");
-
+                    bytesused, pixfmt, width, height) < 0) {
+//                     ERROR_RETURN("Cannot decode MJPEG");
+                    printf("Cannot decode MJPEG");
+                }
+                else {
                 // Convert the camera buffer to YUV420P
                 if (-1 == NvBufferTransform(fd, ctx->render_dmabuf_fd,
                         &transParams))
                     ERROR_RETURN("Failed to convert the buffer");
+                }
+                
             } else {
                 // Cache sync for VIC operation
                 NvBufferMemSyncForDevice(ctx->g_buff[v4l2_buf.index].dmabuff_fd, 0,
@@ -594,10 +598,12 @@ start_capture(context_t * ctx)
                             &transParams))
                     ERROR_RETURN("Failed to convert the buffer");
             }
-            cuda_postprocess(ctx, ctx->render_dmabuf_fd);
+            
+            if( ctx->render_dmabuf_fd ) {
+                cuda_postprocess(ctx, ctx->render_dmabuf_fd);
 
-            ctx->renderer->render(ctx->render_dmabuf_fd);
-
+                ctx->renderer->render(ctx->render_dmabuf_fd);
+            }
             // Enqueue camera buff
             if (ioctl(ctx->cam_fd, VIDIOC_QBUF, &v4l2_buf))
                 ERROR_RETURN("Failed to queue camera buffers: %s (%d)",

@@ -49,6 +49,8 @@
 #include <valgrind/memcheck.h>
 #endif
 
+#define MJPEG_EOS_SEARCH_SIZE 4096
+
 static bool quit = false;
 
 using namespace std;
@@ -554,8 +556,20 @@ start_stream(context_t * ctx)
 
 
 static uint64_t parseDataImage( context_t * _ctx ) {
+    
+    
+    
     uint64_t length = _ctx->cam_buf.bytesused;
     
+    
+                    // v4l2_buf.bytesused may have padding bytes for alignment
+                // Search for EOF to get exact size
+    
+    
+    unsigned int eos_search_size = MJPEG_EOS_SEARCH_SIZE;
+                
+                if (eos_search_size > bytesused)
+                    eos_search_size = bytesused;
     
     
     if(*(_ctx->buffers[_ctx->cam_buf.index].cam_start) != 0xFF || *(_ctx->buffers[_ctx->cam_buf.index].cam_start + 1) != 0xD8)

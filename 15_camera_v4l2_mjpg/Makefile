@@ -89,3 +89,28 @@ $(APP): $(OBJS)
 
 clean:
 	$(AT)rm -rf $(APP) $(OBJS)
+	
+	
+# SET(HAVE_TegraJPEG disabled)
+# IF(ENABLE_TEGRAJPEG)
+#   FIND_PACKAGE(TegraJPEG)
+# 
+#   SET(HAVE_TegraJPEG no)
+#   IF(TegraJPEG_FOUND)
+#     SET(LIBFREENECT2_WITH_TEGRAJPEG_SUPPORT 1)
+#     SET(HAVE_TegraJPEG yes)
+# 
+#     INCLUDE_DIRECTORIES(${TegraJPEG_INCLUDE_DIRS})
+# 
+#     LIST(APPEND SOURCES
+#       src/tegra_jpeg_rgb_packet_processor.cpp
+#     )
+# 
+#     LIST(APPEND LIBRARIES
+#       ${CMAKE_DL_LIBS}
+#     )
+#   ENDIF()
+# ENDIF()
+	
+	
+	
